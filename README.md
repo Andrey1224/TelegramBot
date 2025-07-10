@@ -3,7 +3,43 @@
 
 # Telegram Profit Bot
 
-Telegram бот для управления прибылью с поддержкой брендов, географии и менеджеров.
+Telegram бот для управления прибылью з поддержкой брендов, географии и менеджеров.
+
+## Demo
+
+Для демонстрации работы бота с образцовыми данными:
+
+```bash
+# Загрузить тестовые данные
+sqlite3 bot.db < docs/sample_month_data.sql
+
+# Проверить успешность загрузки
+sqlite3 bot.db "SELECT COUNT(*) FROM reports;"  # должно быть ≥ 19
+
+# Сгенерировать месячный отчёт
+python -c "
+import asyncio
+from services.reports import generate_monthly_report
+asyncio.run(generate_monthly_report(2025, 1))
+"
+
+# Просмотреть готовый отчёт
+cat docs/sample_monthly_report.md
+```
+
+## ⚠️ Важливо: Міграція String → Date
+
+**Для оновлення з попередніх версій:**
+```bash
+# Створіть резервну копію БД
+cp bot.db bot.db.backup
+
+# Запустіть міграцію для зміни типу поля month з VARCHAR на DATE
+alembic upgrade head
+
+# Перевірте результат
+sqlite3 bot.db ".schema facts"
+```
 
 ## Quick Start (venv)
 
@@ -48,6 +84,8 @@ telegram-profit-bot/
 - Дублирование вводов блокируется (уникальный индекс по office_id + geo_id + date)
 - Логирование всех операций в `logs/` с ротацией
 - ForceReply для удобного ввода сумм
+- Retry логика для Telegram API с exponential backoff
+- Поддержка различных форматов ввода сумм (пробелы, запятые, emoji)
 
 ## База данных
 
@@ -58,4 +96,4 @@ telegram-profit-bot/
 - `geo` - география (связана с офисами)
 - `users` - пользователи (ранее manager, связаны с офисами)
 - `reports` - ежедневные отчёты
-- `facts` - месячные факты
+- `facts` - месячные факты (поле month теперь DATE для правильной сортировки)

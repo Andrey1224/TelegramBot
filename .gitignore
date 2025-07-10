@@ -206,3 +206,30 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Project-specific temporary files
+# Demo and development utilities
+demo_*.py
+*_proof.md
+milestone*_proof.md
+
+# Database backups
+*.backup
+bot.db.backup
+
+# Development utility scripts
+add_test_data.py
+check_jobs.py
+inspect_jobqueue.py
+test_db_functions.py
+test_jobqueue_only.py
+test_functions.py
+
+# Project artifacts and documentation drafts
+TEMP_*
+temp_*
+*.tmp
+
+# IDE and editor files
+.cursor/
+.claude/

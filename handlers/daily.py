@@ -3,11 +3,11 @@
 
 import os
 from datetime import date
-from telegram import ForceReply
+from telegram import ForceReply, Update
 from telegram.ext import ContextTypes
-from services.crud import create_report, get_users_by_geo, DuplicateReportError
+from services.crud import create_report, get_users_by_geo, get_user_geos, DuplicateReportError
 from services.reports import get_today_summary, format_summary_markdown
-from utils.logger import logger
+from utils.logger import logger, telegram_retry
 
 # Context: this function is used within the application to send potential profit prompts
 # to managers with ForceReply for easy input
@@ -37,49 +37,51 @@ async def save_potential(update, context):
     user_name = update.effective_user.first_name
     text = update.message.text.strip()
     
-    try:
-        # Parse amount from text
-        amount = int(text.replace(' ', '').replace(',', ''))
-        if amount <= 0:
-            await update.message.reply_text("❌ Сума повинна бути додатнім числом!")
-            return
-            
-    except ValueError:
-        await update.message.reply_text("❌ Будь ласка, введіть коректну суму (тільки цифри)!")
+    # Parse amount with improved validation
+    from utils.logger import parse_amount
+    amount, error_message = parse_amount(text)
+    
+    if error_message:
+        await update.message.reply_text(f"❌ {error_message}\n\nСпробуйте ще раз з коректною сумою.")
         return
     
     try:
-        # Get user's office and geo info
-        users_data = await get_users_by_geo()
-        user_office = None
-        user_geo = None
-        
-        for user_row in users_data:
-            user, geo, office = user_row
-            if user.tg_id == user_id:
-                user_office = office
-                user_geo = geo
-                break
-        
-        if not user_office or not user_geo:
+        # Get user's geos
+        user_geos = await get_user_geos(user_id)
+        if not user_geos:
             await update.message.reply_text("❌ Ваш акаунт не прив'язаний до офісу або регіону!")
             return
         
+        # For daily reports, save to the first geo (or implement geo selection)
+        geo = user_geos[0][0]
+        office = user_geos[0][1]
+        
         # Save report
         await create_report(
-            office_id=user_office.id,
-            geo_id=user_geo.id,
+            office_id=office.id,
+            geo_id=geo.id,
             report_date=date.today(),
             amount=amount
         )
         
-        await update.message.reply_text(
-            f"✅ **Збережено!**\n\n"
-            f"Офіс: {user_office.name}\n"
-            f"Регіон: {user_geo.name}\n"
-            f"Сума: {amount:,} ₴",
-            parse_mode='Markdown'
-        )
+        if len(user_geos) > 1:
+            geo_list = ", ".join([g.name for g, o in user_geos])
+            await update.message.reply_text(
+                f"✅ **Збережено!**\n\n"
+                f"Офіс: {office.name}\n"
+                f"Регіони: {geo_list}\n"
+                f"Сума: {amount:,} ₴\n\n"
+                f"ℹ️ *Сума збережена для регіону {geo.name}*",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                f"✅ **Збережено!**\n\n"
+                f"Офіс: {office.name}\n"
+                f"Регіон: {geo.name}\n"
+                f"Сума: {amount:,} ₴",
+                parse_mode='Markdown'
+            )
         
     except DuplicateReportError:
         await update.message.reply_text("⚠️ Сьогодні вже введено! Дублювання не дозволяється.")
@@ -89,6 +91,7 @@ async def save_potential(update, context):
 
 # Context: this function is used within the application to dispatch daily prompts
 # to all active managers for their respective GEOs
+@telegram_retry(max_retries=3, base_delay=2.0)
 async def dispatch_potential_prompts(context: ContextTypes.DEFAULT_TYPE):
     """Dispatch potential profit prompts to all managers"""
     try:
@@ -99,14 +102,22 @@ async def dispatch_potential_prompts(context: ContextTypes.DEFAULT_TYPE):
             return
         
         sent_count = 0
-        for user_row in users_data:
-            user, geo, office = user_row
+        for user, office in users_data:
             try:
+                # Get user's geos for the message
+                user_geos = await get_user_geos(user.tg_id)
+                if not user_geos:
+                    logger.warning("Користувач %s не має прив'язаних регіонів", user.tg_id)
+                    continue
+                
+                geo_list = ", ".join([geo.name for geo, office in user_geos])
+                
                 message = (
                     f"📅 **Щоденний запит планового прибутку**\n\n"
                     f"Офіс: {office.name}\n"
-                    f"Регіон: {geo.name}\n\n"
-                    f"Будь ласка, введіть плановий прибуток на сьогодні:"
+                    f"Регіони: {geo_list}\n\n"
+                    f"Будь ласка, введіть плановий прибуток на сьогодні:\n\n"
+                    f"ℹ️ *Якщо у вас декілька регіонів, введіть загальну суму*"
                 )
                 
                 await context.bot.send_message(
@@ -116,7 +127,7 @@ async def dispatch_potential_prompts(context: ContextTypes.DEFAULT_TYPE):
                     parse_mode='Markdown'
                 )
                 sent_count += 1
-                logger.info("Відправлено щоденний запит користувачу=%s офіс=%s регіон=%s", user.tg_id, office.name, geo.name)
+                logger.info("Відправлено щоденний запит користувачу=%s офіс=%s регіони=%s", user.tg_id, office.name, geo_list)
                 
             except Exception as e:
                 logger.error("Не вдалося відправити запит користувачу=%s: %s", user.tg_id, str(e))
@@ -128,6 +139,7 @@ async def dispatch_potential_prompts(context: ContextTypes.DEFAULT_TYPE):
 
 # Context: this function is used within the application to send daily digest
 # to admin with summary of all planned amounts
+@telegram_retry(max_retries=3, base_delay=2.0)
 async def send_admin_digest(context: ContextTypes.DEFAULT_TYPE):
     """Send daily digest to admin"""
     try:

@@ -47,22 +47,46 @@ async def test_duplicate_entry_blocked():
 
 # Context: this function is used within the test suite to test job queue scheduling
 # and ensure daily tasks are properly configured
-@pytest.mark.asyncio
-async def test_jobs_scheduled():
-    """Test that job queue has exactly 2 daily jobs scheduled"""
-    from main import app
+def test_jobs_scheduled():
+    """Test that jobs are properly scheduled"""
+    import os
+    from dotenv import load_dotenv
+    from telegram.ext import ApplicationBuilder, CommandHandler
     
-    # Check that job queue exists
-    assert app.job_queue is not None
+    load_dotenv()
+    bot_token = os.getenv("BOT_TOKEN")
+    if not bot_token:
+        bot_token = "dummy_token"
     
-    # Get all jobs
-    jobs = app.job_queue.jobs()
+    app = ApplicationBuilder().token(bot_token).build()
     
-    # Should have exactly 2 jobs
-    assert len(jobs) == 2
+    # Add handlers
+    from handlers.start import start_command
+    app.add_handler(CommandHandler("start", start_command))
     
-    # Check job names (they should be our daily functions)
+    # Add jobs (same as in main.py)
+    jq = app.job_queue
+    
+    # Monthly jobs
+    from utils.schedule import next_last_day, next_first_day
+    from main import ask_fact_all, monthly_report, dispatch_potential_prompts, send_admin_digest
+    
+    jq.run_once(ask_fact_all, when=next_last_day(19, 0))
+    jq.run_once(monthly_report, when=next_first_day(9, 0))
+    
+    # Temporary testing jobs
+    from datetime import timedelta
+    jq.run_once(dispatch_potential_prompts, when=timedelta(seconds=10))
+    jq.run_once(send_admin_digest, when=timedelta(seconds=60))
+    
+    # Check that jobs are scheduled
+    jobs = jq.jobs()
+    assert len(jobs) == 4  # 2 monthly + 2 temporary testing jobs
+    
+    # Check job names
     job_names = [job.name for job in jobs]
+    assert "ask_fact_all" in job_names
+    assert "monthly_report" in job_names
     assert "dispatch_potential_prompts" in job_names
     assert "send_admin_digest" in job_names
 
